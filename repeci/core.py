@@ -1,11 +1,14 @@
 import os
+import itertools
+
 import pandas as pd
 from sqlalchemy import Column, Integer, String, Table, ForeignKey, create_engine
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship, sessionmaker, backref, joinedload
+from sqlalchemy.orm import relationship, sessionmaker
+
 from repeci.RFS import RFS
 from repeci.config import *
+
 
 __author__ = "Anton Tarasenko <antontarasenko@gmail.com>"
 
@@ -75,6 +78,33 @@ class DB():
                           columns=['title', 'year', 'author', 'jel'])
         print("Exported to DataFrame")
         return df
+
+    def ba_table(self):
+        df = self.pd()
+        tab = pd.DataFrame(columns=['k', 'i', 'j', 'B_ijk', 'A_ijk', 'C_ijk', 'N_ijk'])
+        for k in set(df['title'].tolist()):
+            year = df[df['title'] == k]['year'].tolist()[0]
+            authors = set(df[df['title'] == k]['author'].tolist())
+            for i, j in [itertools.permutations(authors, 2)]:
+                B_ijk = set(df[df['title'] == k & df['year'] < year]['jel'].tolist())
+                A_ijk = set(df[df['title'] == k & df['year'] > year]['jel'].tolist())
+                C_ijk = B_ijk & A_ijk
+                N_ijk = A_ijk - C_ijk
+
+        for row in tab.iterrows():
+            i, j = row[1]['i'], row[1]['j']
+            ix = tab.i == i & tab.j == j
+            tab[ix]['T_jik'] = tab[tab.j == i & tab.i == j]['B_ijk'] & tab['N_ijk']
+            tab[ix]['r_jik'] = len(tab[ix]['T_jik']) / len(tab[ix]['A_ijk'])
+
+        r_ji = tab['r_jik'].groupby(['i', 'j']).agg['mean']
+        return r_ji
+
+
+    def summary(self):
+        pass
+        # TODO a diff join
+        # db.s.query(core.Paper).join(core.Author.papers).filter(func.count(core.Author.id) == 0).first()
 
     def import_rdf(self, file):
         with open(file, 'r', encoding='latin-1') as f:
