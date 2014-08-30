@@ -2,6 +2,7 @@ import os
 import itertools
 
 import pandas as pd
+import networkx as nx
 from sqlalchemy import Column, Integer, String, Table, ForeignKey, create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
@@ -23,6 +24,10 @@ papers2jel_table = Table('papers2jel', Base.metadata,
     Column('paper_id', Integer, ForeignKey('papers.id')),
     Column('jel_id', Integer, ForeignKey('jel.id'))
 )
+cites2cited_table = Table('cites2cited', Base.metadata,
+                          Column('cites', Integer, ForeignKey('papers.id'), primary_key=True),
+                          Column('cited', Integer, ForeignKey('papers.id'), primary_key=True)
+)
 
 class Paper(Base):
     __tablename__ = "papers"
@@ -30,8 +35,13 @@ class Paper(Base):
     id = Column(Integer, primary_key=True)
     title = Column(String)
     year = Column(Integer)
-    handle = Column(String)
+    handle = Column(String, unique=True)
 
+    refs = relationship("Paper",
+                        secondary="cites2cited",
+                        primaryjoin="Paper.id==cites2cited.c.cites",
+                        secondaryjoin="Paper.id==cites2cited.c.cited",
+                        backref="cited_by")
     authors = relationship("Author",
                     secondary="papers2authors",
                     backref="papers")
@@ -100,11 +110,37 @@ class DB():
         r_ji = tab['r_jik'].groupby(['i', 'j']).agg['mean']
         return r_ji
 
+    def import_refs(self, file, n=0):
+        lines = list()
+        with open(file) as f:
+            if n == 0:
+                lines = f.readlines()
+            else:
+                c = 0
+                while c < n:
+                    lines.append(f.readline().strip())
+                    c += 1
+        print(len(lines), "lines read")
+        for line in lines:
+            sep = line.split(sep=" ")
+            cited = sep[0]
+            cited_instance = self.s.query(Paper).filter(Paper.handle == cited).first()
+            if cited_instance is None:
+                cited_instance = Paper(handle=cited)
+            for cites in sep[1].split(sep="#"):
+                cites_instance = self.s.query(Paper).filter(Paper.handle == cites).first()
+                if cites_instance is None:
+                    cites_instance = Paper(handle=cites)
+                cited_instance.cited_by.append(cites_instance)
+            self.s.add(cited_instance)
+            self.s.commit()
 
-    def summary(self):
-        pass
-        # TODO a diff join
-        # db.s.query(core.Paper).join(core.Author.papers).filter(func.count(core.Author.id) == 0).first()
+    def ref_graph(self):
+        G = nx.DiGraph()
+        for (cited,) in self.s.query(Paper.handle).all():
+            for (cited_by,) in self.s.query(Paper.handle).filter(Paper.refs.any(Paper.handle == cited)).all():
+                G.add_edge(cited, cited_by)
+        return G
 
     def import_rdf(self, file):
         with open(file, 'r', encoding='latin-1') as f:
