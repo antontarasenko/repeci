@@ -1,5 +1,6 @@
 import os
 import itertools
+import time
 
 import pandas as pd
 import networkx as nx
@@ -73,11 +74,16 @@ class JEL(Base):
 
 class DB():
     def __init__(self):
-        engine = create_engine('sqlite:///' + REPECI_DB, echo=True)
+        engine = create_engine('sqlite:///' + REPECI_DB, echo=False)
         Base.metadata.create_all(engine)
         Session = sessionmaker(bind=engine)
         session = Session()
         self.s = session
+
+    def url(self, handle):
+        t = handle.split(":")
+        url = "http://ideas.repec.org/p/" + "/".join(t[1:]) + ".html"
+        return url
 
     def pd(self):
         df = pd.DataFrame(self.s.\
@@ -127,58 +133,80 @@ class DB():
             cited_instance = self.s.query(Paper).filter(Paper.handle == cited).first()
             if cited_instance is None:
                 cited_instance = Paper(handle=cited)
-            for cites in sep[1].split(sep="#"):
-                cites_instance = self.s.query(Paper).filter(Paper.handle == cites).first()
-                if cites_instance is None:
-                    cites_instance = Paper(handle=cites)
-                cited_instance.cited_by.append(cites_instance)
+            for citing in set(sep[1].split(sep="#")):
+                citing_instance = self.s.query(Paper).filter(Paper.handle == citing).first()
+                if citing_instance is None:
+                    citing_instance = Paper(handle=citing)
+                if cited_instance.handle != cited_instance.handle:
+                    cited_instance.cited_by.append(citing_instance)
             self.s.add(cited_instance)
-            self.s.commit()
+            self.s.flush()
+        self.s.commit()
 
     def ref_graph(self):
-        G = nx.DiGraph()
+        G = nx.MultiDiGraph()
         for (cited,) in self.s.query(Paper.handle).all():
             for (cited_by,) in self.s.query(Paper.handle).filter(Paper.refs.any(Paper.handle == cited)).all():
                 G.add_edge(cited, cited_by)
+        print("Graph building is completed.")
         return G
+
+    def ref_metrics(self, G):
+        nxodc = nx.out_degree_centrality(G)
+        odc = pd.DataFrame(list(nxodc.values()), columns=['odc'], index=nxodc.keys())
+        nxpr = nx.pagerank(G)
+        pr = pd.DataFrame(list(nxpr.values()), columns=['pr'], index=nxpr.keys())
+        df = odc.join(pr, how='outer')
+        return df
 
     def import_rdf(self, file):
         with open(file, 'r', encoding='latin-1') as f:
             lines = f.readlines()
         paper = Paper()
+        is_article = False
         for line in lines:
             br = line.find(':')
             k = line[:br]
             v = line[br+1:].strip()
 
-            if k == "Title":
-                paper.title = v
-            elif k == "Year":
-                paper.year = v
-            elif k == "Author-Name":
-                author = self.s.query(Author).filter(Author.name==v).first()
-                if author is None:
-                    author = Author(name=v)
+            if k.lower() == "template-type":
+                is_article = True if v == "ReDIF-Article 1.0" else False
 
-                paper.authors.append(author)
-            elif k == "Classification-JEL":
-                codes = {c.strip() for c in v.split(", ")}
-                for c in codes:
-                    if len(c) != 3:
-                        raise ValueError("Not a 3-letter code")
-                    jel = self.s.query(JEL).filter(JEL.code==c).first()
-                    if jel is None:
-                        jel = JEL(code=c)
-                    paper.jel.append(jel)
-            elif k == "Handle":
-                paper.handle = v
-                self.s.add(paper)
-                self.s.commit()
-                paper = Paper()
+            if is_article:
+                if k == "Title":
+                    paper.title = v
+                elif k == "Year":
+                    paper.year = v
+                elif k == "Author-Name":
+                    author = self.s.query(Author).filter(Author.name == v).first()
+                    if author is None:
+                        author = Author(name=v)
+                    paper.authors.append(author)
+                elif k == "Classification-JEL":
+                    codes = {c.strip() for c in v.split(", ")}
+                    for c in codes:
+                        if len(c) != 3:
+                            raise ValueError("Not a 3-letter code")
+                        jel = self.s.query(JEL).filter(JEL.code == c).first()
+                        if jel is None:
+                            jel = JEL(code=c)
+                        paper.jel.append(jel)
+                elif k == "Handle":
+                    paper.handle = v
+                    # TODO is this check necessary?
+                    # paper_exists = self.s.query(Paper).filter(Paper.handle==paper.handle).first()
+                    # if paper_exists is not None:
+                    # paper =
+                    if len(paper.authors) == 0:
+                        raise ImportError("An article with empty authors:", paper.handle)
+                    self.s.add(paper)
+                    self.s.commit()
+                    print("Paper added:", paper.handle)
+                    paper = Paper()
 
 
-    def import_all(self, n=0):
-        rfs = RFS(REPEC_ROOT_DIR)
+    def import_all(self, file, n=0):
+        rfs = RFS(REPEC_OPT_DIR)
         if n == 0:
             for file in rfs.realpaths():
                 self.import_rdf(file)
@@ -186,6 +214,7 @@ class DB():
             for i, file in enumerate(rfs.realpaths(), start=1):
                 self.import_rdf(file)
                 if i >= n: break
+        print("Importing is completed")
 
 
 def main():
@@ -200,7 +229,17 @@ def main():
             print("Failed with:", e.strerror) # look what it says
             print("Error code:", e.code)
     db = DB()
-    db.import_all(1)
+
+    s = time.perf_counter()
+    db.import_all(REPEC_OPT_DIR, n=RDF_MAX)
+    e = time.perf_counter()
+    print("%d rdf files have been imported in %d seconds" % (RDF_MAX, round(e - s, 1)))
+
+    s = time.perf_counter()
+    db.import_refs(REPEC_REFS_FILE, n=REFS_MAX)
+    e = time.perf_counter()
+    print("%d reference nodes have been imported in %d seconds" % (REFS_MAX, round(e - s, 1)))
+
     db.s.close()
 
 if __name__ == '__main__':
