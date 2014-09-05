@@ -2,6 +2,7 @@ import os
 import itertools
 import time
 
+import numpy as np
 import pandas as pd
 import networkx as nx
 from sqlalchemy import Column, Integer, String, Table, ForeignKey, create_engine
@@ -25,8 +26,8 @@ papers2jel_table = Table('papers2jel', Base.metadata,
     Column('paper_id', Integer, ForeignKey('papers.id')),
     Column('jel_id', Integer, ForeignKey('jel.id'))
 )
-cites2cited_table = Table('cites2cited', Base.metadata,
-                          Column('cites', Integer, ForeignKey('papers.id'), primary_key=True),
+citing2cited_table = Table('citing2cited', Base.metadata,
+                           Column('citing', Integer, ForeignKey('papers.id'), primary_key=True),
                           Column('cited', Integer, ForeignKey('papers.id'), primary_key=True)
 )
 
@@ -39,9 +40,9 @@ class Paper(Base):
     handle = Column(String, unique=True)
 
     refs = relationship("Paper",
-                        secondary="cites2cited",
-                        primaryjoin="Paper.id==cites2cited.c.cites",
-                        secondaryjoin="Paper.id==cites2cited.c.cited",
+                        secondary="citing2cited",
+                        primaryjoin="Paper.id==citing2cited.c.citing",
+                        secondaryjoin="Paper.id==citing2cited.c.cited",
                         backref="cited_by")
     authors = relationship("Author",
                     secondary="papers2authors",
@@ -120,7 +121,7 @@ class DB():
         lines = list()
         with open(file) as f:
             if n == 0:
-                lines = f.readlines()
+                lines = f.read().splitlines()
             else:
                 c = 0
                 while c < n:
@@ -137,26 +138,47 @@ class DB():
                 citing_instance = self.s.query(Paper).filter(Paper.handle == citing).first()
                 if citing_instance is None:
                     citing_instance = Paper(handle=citing)
-                if cited_instance.handle != cited_instance.handle:
+                if citing_instance.handle != cited_instance.handle:
                     cited_instance.cited_by.append(citing_instance)
             self.s.add(cited_instance)
             self.s.flush()
         self.s.commit()
 
     def ref_graph(self):
-        G = nx.MultiDiGraph()
+        s = time.perf_counter()
+        # MultiDiGraph isn't supported by pagerank() and other algorithms
+        G = nx.DiGraph()
         for (cited,) in self.s.query(Paper.handle).all():
-            for (cited_by,) in self.s.query(Paper.handle).filter(Paper.refs.any(Paper.handle == cited)).all():
-                G.add_edge(cited, cited_by)
-        print("Graph building is completed.")
+            for (citing,) in self.s.query(Paper.handle).filter(Paper.refs.any(Paper.handle == cited)).all():
+                G.add_edge(cited, citing)
+        e = time.perf_counter()
+        print("Graph building is completed in %d seconds" % round(e - s, 1))
         return G
 
     def ref_metrics(self, G):
+        s = time.perf_counter()
         nxodc = nx.out_degree_centrality(G)
         odc = pd.DataFrame(list(nxodc.values()), columns=['odc'], index=nxodc.keys())
         nxpr = nx.pagerank(G)
         pr = pd.DataFrame(list(nxpr.values()), columns=['pr'], index=nxpr.keys())
         df = odc.join(pr, how='outer')
+        e = time.perf_counter()
+        print("Metrics is computed in %d seconds" % round(e - s, 1))
+        return df
+
+    def ref_pagerank_a(self, G):
+        '''
+        Check `nx.pagerank()` sensitivity for alpha.
+        :param G: graph
+        :return: pd.DataFrame of comparative statistics
+        '''
+        df = pd.DataFrame()
+        for a in np.arange(.5, 1, .05):
+            nxpr = nx.pagerank(G, alpha=a)
+            df = df.join(pd.DataFrame(list(nxpr.values()),
+                                      columns=[str(a)],
+                                      index=nxpr.keys()),
+                         how='outer')
         return df
 
     def import_rdf(self, file):
@@ -225,8 +247,8 @@ def main():
         except FileNotFoundError:
             if str(input("File not found. Continue with a new one? [y/n] ")) == "n":
                 return None
-        except OSError as e: # name the Exception `e`
-            print("Failed with:", e.strerror) # look what it says
+        except OSError as e:
+            print("Failed with:", e.strerror)
             print("Error code:", e.code)
     db = DB()
 
