@@ -159,21 +159,20 @@ class DB():
     def ref_metrics(self, G):
         s = time.perf_counter()
 
-        # TODO rewrite for df.melt
-        # Out degree centrality is a simple measure of citation index, i.e., how much the article was cited
-        nxodc = nx.out_degree_centrality(G)
-        odc = pd.DataFrame(list(nxodc.values()), columns=['odc'], index=nxodc.keys())
+        # See https://networkx.github.io/documentation/latest/reference/algorithms.html for algoriths
+        # Some algorithms don't support directed graphs
 
-        # PageRank for authority measure. See also HITS authority matrix
-        nxpr = nx.pagerank(G)
-        pr = pd.DataFrame(list(nxpr.values()), columns=['pr'], index=nxpr.keys())
-        # Join because networkx returns non-sequential values.
-        df = odc.join(pr, how='outer')
-
-        # Betweenness centrality to indicate inspiring papers
-        nxbc = nx.betweenness_centrality(G)
-        bc = pd.DataFrame(list(nxbc.values()), columns=['bc'], index=nxbc.keys())
-        df = df.join(bc, how='outer')
+        df = pd.DataFrame([nx.out_degree_centrality(G),
+                           nx.pagerank(G),
+                           nx.betweenness_centrality(G),
+                           nx.closeness_centrality(G),
+                           # nx.current_flow_betweenness_centrality(G),
+                           # nx.current_flow_closeness_centrality(G),
+                           # nx.eigenvector_centrality(G)
+        ]).T
+        df.columns = ['odc', 'pr', 'bc', 'cc',
+                      # 'cfbc', 'cfcc', 'ec'
+        ]
 
         e = time.perf_counter()
         print("Metrics is computed in %d seconds" % round(e - s, 1))
