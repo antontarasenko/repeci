@@ -28,7 +28,7 @@ papers2jel_table = Table('papers2jel', Base.metadata,
 )
 citing2cited_table = Table('citing2cited', Base.metadata,
                            Column('citing', Integer, ForeignKey('papers.id'), primary_key=True),
-                          Column('cited', Integer, ForeignKey('papers.id'), primary_key=True)
+                           Column('cited', Integer, ForeignKey('papers.id'), primary_key=True)
 )
 
 class Paper(Base):
@@ -38,6 +38,9 @@ class Paper(Base):
     title = Column(String)
     year = Column(Integer)
     handle = Column(String, unique=True)
+    # meta = ["1", "2"] # handle.split(":")
+    # provider = column_property(str(handle).split(":")[1])
+    # series = column_property(meta[2])
 
     refs = relationship("Paper",
                         secondary="citing2cited",
@@ -51,7 +54,9 @@ class Paper(Base):
                     secondary="papers2jel",
                     backref="papers")
     def __repr__(self):
-        return '<Paper %d "%s" %d %s>' % (self.id, self.title, self.year, self.handle)
+        hsplit = self.handle.split(":")
+        url = "http://ideas.repec.org/p/%s/%s.html" % ("/".join(hsplit[1:3]), "".join(hsplit[3:]))
+        return '<Paper %d %s>' % (self.id, url)
 
 class Author(Base):
     __tablename__ = "authors"
@@ -80,11 +85,6 @@ class DB():
         Session = sessionmaker(bind=engine)
         session = Session()
         self.s = session
-
-    def url(self, handle):
-        t = handle.split(":")
-        url = "http://ideas.repec.org/p/" + "/".join(t[1:]) + ".html"
-        return url
 
     def pd(self):
         df = pd.DataFrame(self.s.\
@@ -146,32 +146,52 @@ class DB():
 
     def ref_graph(self):
         s = time.perf_counter()
+        s2 = time.perf_counter()
         # MultiDiGraph isn't supported by pagerank() and other algorithms
         G = nx.DiGraph()
-        for (cited,) in self.s.query(Paper.handle).all():
+        G.add_edges_from(self.s.query(citing2cited_table).all())
+        '''
+        for (citing, cited) in self.s.query(citing2cited_table).all():
+        for i, (cited,) in enumerate(self.s.query(Paper.handle).all(), 1):
             for (citing,) in self.s.query(Paper.handle).filter(Paper.refs.any(Paper.handle == cited)).all():
                 G.add_edge(cited, citing)
+            if i % 100 == 0:
+                e2 = time.perf_counter()
+                print("%d cited papers processed in %d seconds" % (i, round(e2 - s2, 1)))
+                s2 = time.perf_counter()
+        '''
         e = time.perf_counter()
 
         print("Graph building is completed in %d seconds" % round(e - s, 1))
         return G
 
     def ref_metrics(self, G):
+        '''
+        See https://networkx.github.io/documentation/latest/reference/algorithms.html for algorithms.
+        Some algorithms don't support directed graphs. More comments on each algorithm in respect to directed graphs.
+        Edges in graph G are directed from a to b in (a, b), where a cites b.
+        :param G: graph
+        :return: a dataframe of network statistics for each node.
+        '''
+
         s = time.perf_counter()
 
-        # See https://networkx.github.io/documentation/latest/reference/algorithms.html for algoriths
-        # Some algorithms don't support directed graphs
-
-        df = pd.DataFrame([nx.out_degree_centrality(G),
+        df = pd.DataFrame([  # Equals the number of references in a paper as (2, 1) is "2" citing "1"
+                             nx.out_degree_centrality(G),
+                             # (1, 3) and (2, 3) give PageRank to "3"
                            nx.pagerank(G),
-                           nx.betweenness_centrality(G),
+                           # (1, 2, 3) gives 0 to "3" as it can't reach any other nodes
+                           # Since "if the graph is not completely connected, this algorithm computes the closeness
+                           # centrality for each connected part separately," beware comparing closeness across the sample
                            nx.closeness_centrality(G),
+                           # (2, 3, 4) and (4, 3, 2) give higher betweenness to "3" than (2, 3, 4) alone does
+                           # nx.betweenness_centrality(G),
                            # nx.current_flow_betweenness_centrality(G),
                            # nx.current_flow_closeness_centrality(G),
                            # nx.eigenvector_centrality(G)
         ]).T
-        df.columns = ['odc', 'pr', 'bc', 'cc',
-                      # 'cfbc', 'cfcc', 'ec'
+        df.columns = ['odc', 'pr', 'cc',
+                      # 'bc', 'cfbc', 'cfcc', 'ec'
         ]
 
         e = time.perf_counter()
@@ -252,6 +272,21 @@ class DB():
 
 
 def main():
+    if REPECI_MODE == "use":
+        use()
+    elif REPECI_MODE == "create":
+        create()
+
+
+def use():
+    db = DB()
+    G = db.ref_graph()
+    rm = db.ref_metrics(G)
+    print(rm.info(), rm.describe())
+    db.s.close()
+
+
+def create():
     if RECREATE_DB:
         try:
             os.remove(REPECI_DB)
@@ -275,6 +310,7 @@ def main():
     print("%d reference nodes have been imported in %d seconds" % (REFS_MAX, round(e - s, 1)))
 
     db.s.close()
+
 
 if __name__ == '__main__':
     main()
