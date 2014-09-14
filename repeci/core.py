@@ -178,11 +178,13 @@ class DB():
 
         df = pd.DataFrame([  # Equals the number of references in a paper as (2, 1) is "2" citing "1"
                              nx.out_degree_centrality(G),
+                             # Equals the number of citations
+                             nx.in_degree_centrality(G),
                              # (1, 3) and (2, 3) give PageRank to "3"
                            nx.pagerank(G),
                            # (1, 2, 3) gives 0 to "3" as it can't reach any other nodes
                            # Since "if the graph is not completely connected, this algorithm computes the closeness
-                           # centrality for each connected part separately," beware comparing closeness across the sample
+                           # centrality for each connected part separately," ensure that all papers are connected
                            nx.closeness_centrality(G),
                            # (2, 3, 4) and (4, 3, 2) give higher betweenness to "3" than (2, 3, 4) alone does
                            # nx.betweenness_centrality(G),
@@ -190,7 +192,7 @@ class DB():
                            # nx.current_flow_closeness_centrality(G),
                            # nx.eigenvector_centrality(G)
         ]).T
-        df.columns = ['odc', 'pr', 'cc',
+        df.columns = ['odc', 'idc', 'pr', 'cc',
                       # 'bc', 'cfbc', 'cfcc', 'ec'
         ]
 
